@@ -1,0 +1,43 @@
+# qoi_stream.h's tests (make -f Makefile.stream ...); qoi.h's own Makefile is untouched.
+#   test        the round trips and conformance against qoi.h (QOI_IMAGES: qoiformat.org's qoi_test_images/*.qoi, optional)
+#   test-asan   the same under AddressSanitizer and UndefinedBehaviorSanitizer
+#   fuzz        the libFuzzer target (clang); run ./qoi_stream_fuzz
+#   fuzz-driver the target without libFuzzer, under the sanitizers, on N mutations of each image (FUZZ_RUNS, QOI_IMAGES)
+#   wasm        the decoder and encoder as WebAssembly without a C library (clang, wasm-ld): fails on any undefined symbol
+CC ?= cc
+CLANG ?= clang
+QOI_IMAGES ?=
+FUZZ_RUNS ?= 20000
+SAN = -fsanitize=address,undefined -fno-sanitize-recover=all
+
+all: test
+
+qoi_stream_test: qoi_stream_test.c qoi_stream.h qoi.h
+	$(CC) -std=c99 -O2 -Wall -Wextra -Wpedantic qoi_stream_test.c -o $@
+
+test: qoi_stream_test
+	./qoi_stream_test $(QOI_IMAGES)
+
+test-asan: qoi_stream_test.c qoi_stream.h qoi.h
+	$(CC) -std=c99 -O1 -g -Wall -Wextra $(SAN) qoi_stream_test.c -o qoi_stream_test_asan
+	./qoi_stream_test_asan $(QOI_IMAGES)
+
+fuzz: qoi_stream_fuzz.c qoi_stream.h qoi.h
+	$(CLANG) -O1 -g -fsanitize=address,undefined,fuzzer qoi_stream_fuzz.c -o qoi_stream_fuzz
+
+fuzz-driver: qoi_stream_fuzz.c qoi_stream.h qoi.h
+	$(CC) -std=c99 -O1 -g -DQOIS_FUZZ_MAIN $(SAN) qoi_stream_fuzz.c -o qoi_stream_fuzz_driver
+	./qoi_stream_fuzz_driver $(FUZZ_RUNS) $(QOI_IMAGES)
+
+wasm: qoi_stream_wasm.c qoi_stream.h
+	@# (wasm-ld refuses an undefined symbol unless told to import it: the link itself proves that the module imports nothing)
+	$(CLANG) --target=wasm32 -O3 -nostdlib -mbulk-memory -Wl,--no-entry -Wl,--export-dynamic qoi_stream_wasm.c -o qoi_stream.wasm
+	@$(CLANG) --target=wasm32 -O3 -nostdlib -mbulk-memory -c qoi_stream_wasm.c -o qoi_stream_wasm.o && \
+	  if llvm-nm -u qoi_stream_wasm.o | grep -v -E ' (__stack_pointer|__indirect_function_table)$$' | grep -q .; then \
+	    echo "undefined symbols (the linker's own globals aside):"; llvm-nm -u qoi_stream_wasm.o; exit 1; fi
+	@echo "qoi_stream.wasm: $$(wc -c < qoi_stream.wasm) bytes, no import"
+
+clean:
+	$(RM) qoi_stream_test qoi_stream_test_asan qoi_stream_fuzz qoi_stream_fuzz_driver qoi_stream.wasm qoi_stream_wasm.o
+
+.PHONY: all test test-asan fuzz fuzz-driver wasm clean
